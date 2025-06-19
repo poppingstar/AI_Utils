@@ -1,52 +1,57 @@
 import torch.optim.optimizer as optim
-import torch, time, torchvision
+import torch, time, torchvision, inspect
 import torch.nn as nn
+import torch.optim as optim
 import torch.utils.data as data
 from torch.utils.data import DataLoader
+from torch.nn.modules.loss import _WeightedLoss
 from pathlib import Path
 import matplotlib.pyplot as plt
 from typing import Union
 from PIL import Image
 from torchmetrics.functional import confusion_matrix
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 plt.switch_backend('agg')
 
-@dataclass
-class HyperParameter():
-	save_point: int = 50
-	batch: int = 32
-	workers: int = 12
-	epochs: int = 100000
-	patience: int = 5
-	lr: float = 0.0005,
-	inplace: Union[int,tuple] = (224,224)
-	transforms: dict = field(default_factory=dict)
-	criterion: nn.Module = nn.CrossEntropyLoss(reduction='sum')
-	optimizer: optim.Optimizer = None
-	def __post_init__(self):
-		self.type_check()
 
-		if self.transforms == None:
+def check_path(path):
+	path = Path(path)
+	path.mkdir(parents=True, exist_ok=True)
+
+
+@dataclass
+class TrainConfig():
+	def __init__(self, save_point=30, batch_size=64, workers=12, epochs=10000, patience=10, lr=0.0005, inplace=(224,224),
+				transforms:dict=None, criterion=nn.CrossEntropyLoss(reduction='sum'), optimizer:optim.Optimizer=None):
+		for param, name in zip((save_point, batch_size, workers, epochs, patience),('save_point', 'batch', 'workers', 'epochs', 'patience')):
+			assert isinstance(param, int), f'{name} must be instance of int'
+		assert isinstance(lr, (float, int)), 'lr must be instance of float or int'
+		assert isinstance(inplace, (int, tuple)), 'inplace must be int or tuple'
+		assert isinstance(criterion, torch.nn.modules.loss._Loss), 'criterion must be instance of _Loss'
+		if transforms:
+			assert isinstance(transforms, dict), 'transforms must be instance of dict'
+		if optimizer:
+			assert isinstance(optimizer, torch.optim.Optimizer), 'parameter must be instance of Optimizer'
+		
+		self.save_point=save_point
+		self.batch_size=batch_size
+		self.workers=workers
+		self.epochs=epochs
+		self.patience=patience
+		self.lr=lr
+		self.inplace=inplace
+		self.criterion = criterion
+		self.optimizer = optimizer
+
+		if transforms:
+			self.transforms=transforms
+		else:
 			self.transforms={  #케이스 별 transform 정의
 			'train':torchvision.transforms.Compose([torchvision.transforms.Resize(self.inplace), torchvision.transforms.ToTensor()]),
 			'valid':torchvision.transforms.Compose([torchvision.transforms.Resize(self.inplace), torchvision.transforms.ToTensor()]),
 			'test':torchvision.transforms.Compose([torchvision.transforms.Resize(self.inplace),  torchvision.transforms.ToTensor()])
 			}
-	
-	def type_check(self):
-		transforms = self.transforms
-		optimizer  = self.optimizer
-
-		for param, name in zip((self.save_point, self.batch, self.workers, self.epochs, self.patience),('save_point', 'batch', 'workers', 'epochs', 'patience')):
-			assert isinstance(param, int), f'{name} must be instance of int'
-		assert isinstance(self.lr, (float, int)), 'lr must be instance of float or int'
-		assert isinstance(self.inplace, (int, tuple)), 'inplace must be int or tuple'
-		assert isinstance(self.criterion, torch.nn.modules.loss._Loss), 'criterion must be instance of _Loss'
-		if transforms:
-			assert isinstance(transforms, dict), 'transforms must be instance of dict'
-		if optimizer:
-			assert isinstance(optimizer, torch.optim.Optimizer), 'parameter must be instance of Optimizer'
 
 	def set_transforms(self, transforms:dict):
 		assert isinstance(transforms, dict), 'transforms must be a dictionary'
@@ -59,9 +64,12 @@ class HyperParameter():
 	def nomalize(self, img:torch.Tensor):
 		return img.float()/255.0
 	
-	def save_params_log(self, file):
+	def save_log(self, file = None):
+		file = Path(file)
+		check_path(file.parent)
+
 		hyper_log=f'''save_point: {self.save_point}
-batch_size: {self.batch}
+batch_size: {self.batch_size}
 epochs: {self.epochs}
 patience: {self.patience}
 lr: {self.lr}
@@ -70,10 +78,12 @@ optimizer: {self.optimizer}
 inplace: {self.inplace}
 workers: {self.workers}
 '''
+		
 		with open(file,'a',encoding='utf-8') as f:
 			f.write(hyper_log)
 
-class DirDataset(data.Dataset):
+
+class ImageDir(data.Dataset):
 	def __init__(self, dataset_path, transforms=None):
 		self.dataset_path=Path(dataset_path)		
 		self.transforms=transforms
@@ -113,9 +123,11 @@ class DirDataset(data.Dataset):
 
 		return img, label
 
+
 def save_log(save_dir, *metrics):
 	with open(save_dir/'log.txt','a') as f:
 		f.writelines([line+'\n' for line in metrics])
+
 
 def get_confusion(outputs:torch.Tensor, labels:torch.Tensor):
 	num_classes=outputs.shape[1]
@@ -127,6 +139,7 @@ def get_confusion(outputs:torch.Tensor, labels:torch.Tensor):
 	tn=cm.sum()-fn-fp-tp
 
 	return [value.sum().item() for value in (tp,fp,fn,tn)]
+
 
 def no_overwrite(path, mode='dir')->Path: #기존 훈련 파일이 덮어써지지 않도록 하는 함수
 	path=Path(path)
@@ -149,7 +162,8 @@ def no_overwrite(path, mode='dir')->Path: #기존 훈련 파일이 덮어써지�
 				path=path.with_name(f'{i}') #없는 디렉토리가 나올 때 까지 숫자를 증가시키며 적용
 			return path
 
-def run_epoch(model:nn.Module, loader:DataLoader, criterion:nn.Module, optimizer:optim.Optimizer, device:torch.device, mode:str): #에폭 하나를 실행
+
+def run_epoch(model:nn.Module, loader:DataLoader, criterion:_WeightedLoss, optimizer:optim.Optimizer, device:torch.device, mode:str): #에폭 하나를 실행
 	epoch_loss,epoch_acc=.0,.0  #loss, accuracy 초기화
 
 	match mode:
@@ -186,7 +200,7 @@ def run_epoch(model:nn.Module, loader:DataLoader, criterion:nn.Module, optimizer
 		dataset_size+=batch_size
 
 		tp,tn,fp,fn=get_confusion(outputs, labels)
-		epoch_tp+=tp	#이게 원인일지도
+		epoch_tp+=tp
 		epoch_tn+=tn
 		epoch_fp+=fp
 		epoch_fn+=fn
@@ -208,8 +222,8 @@ def run_epoch(model:nn.Module, loader:DataLoader, criterion:nn.Module, optimizer
 
 	return epoch_loss, epoch_acc, precision, recall #loss와 acc의 평균 반환
 
-def train(model:nn.Module, train_loader:DataLoader, valid_loader:DataLoader, hyper_param, save_dir:Union[Path,str]):  #훈련 함수
-	
+
+def train_valid_run(model:nn.Module, train_loader:DataLoader, valid_loader:DataLoader, hyper_param, save_dir:Union[Path,str]):  #훈련 함수
 	save_dir=Path(save_dir); save_dir.mkdir(exist_ok=True,parents=True)
 
 	device:torch.device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')  #사용 가능한 디바이스 확인
@@ -226,7 +240,7 @@ def train(model:nn.Module, train_loader:DataLoader, valid_loader:DataLoader, hyp
 	valid_losses,valid_accuracies=[],[]
 	for epoch in range(1, hyper_param.epochs+1):
 		since=time.time()  #에폭 시작 시간
-		train_loss, train_accuracy, train_precision, tarin_recall=run_epoch(model, train_loader, hyper_param.criterion, hyper_param.optimizer, device, 'train')  #훈련 실행
+		train_loss, train_accuracy, train_precision, tarin_recall = run_epoch(model, train_loader, hyper_param.criterion, hyper_param.optimizer, device, 'train')  #훈련 실행
 		valid_loss, valid_accuracy, valid_precision, valid_recall=run_epoch(model, valid_loader, hyper_param.criterion, hyper_param.optimizer, device, 'valid')  #검증 실행
 
 		duration=time.time()-since  #에폭 수행시간 계산
@@ -243,7 +257,7 @@ def train(model:nn.Module, train_loader:DataLoader, valid_loader:DataLoader, hyp
 		draw_graph(valid_losses,valid_accuracies, save_dir/'valid_graph.png')
 		
 	#early stop
-		if minimun_loss <= valid_loss:  #검증 로스가 최소치보다 작지 않으면
+		if minimun_loss<valid_loss:  #검증 로스가 최소치보다 작지 않으면
 			es_count+=1  #es count를 증가시킨다
 			if hyper_param.patience>0 and es_count>=hyper_param.patience:  #만약 patience가 0보다 크고, es_count가 patience보다 높다면
 				torch.save(model.state_dict(),last_path)  #최종 훈련 가중치를 저장하고 학습 종료
@@ -269,8 +283,10 @@ def train(model:nn.Module, train_loader:DataLoader, valid_loader:DataLoader, hyp
 	torch.save(model.state_dict(),last_path)
 	model.load_state_dict(torch.load(best_path,weights_only=True))
 
-def test(model:nn.Module, test_loader:DataLoader, hyper_param, save_dir):
-	device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def run_test(model:nn.Module, test_loader:DataLoader, hyper_param, save_dir, device = None):
+	if device is None:
+		device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 	model.to(device)
 	since=time.time()*1000
 	test_loss, test_acc, precision, recall=run_epoch(model, test_loader, hyper_param.criterion, hyper_param.optimizer, device, 'test')
@@ -283,34 +299,35 @@ def test(model:nn.Module, test_loader:DataLoader, hyper_param, save_dir):
 		with open(save_dir/'log.txt','a') as f:
 			f.write(f'test: {metrics}')
 
-def train_test(model:nn.Module, train_loader:DataLoader, valid_loader:DataLoader, test_loader:DataLoader, hyper_param:HyperParameter, save_dir:Union[Path,str]):  #훈련 함수
-	train(model, train_loader, valid_loader, hyper_param, save_dir)
-	test(model, test_loader, hyper_param, save_dir)
 
-def set_param_requires_grad(model:nn.Module, gradient_mode:bool):
-	for param in model.parameters():
-		param.requires_grad = gradient_mode
+def train_test(model:nn.Module, train_loader:DataLoader, valid_loader:DataLoader, test_loader:DataLoader, hyper_param:TrainConfig, save_dir:Union[Path,str]):  #훈련 및 테스트트 함수
+	train_valid_run(model, train_loader, valid_loader, hyper_param, save_dir)
+	run_test(model, test_loader, hyper_param, save_dir)
+
 
 def draw_graph(loss, accuracy, save_path):
-    fig, ax1 = plt.subplots()
+	plt.plot(loss,'b-', label='Loss')
+	plt.plot(accuracy, 'r-', label='Accuracy')
+	plt.xlabel('Epoch')
+	plt.ylabel('Loss & Accuracy',)
 
-    # 첫 번째 y축 (Loss)
-    ax1.plot(loss, 'b-', label='Loss')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Loss', color='b')
-    ax1.tick_params(axis='y', labelcolor='b')
+	plt.legend(loc=(0,1))
+	plt.title('Model Graph')
+	plt.savefig(save_path)
+	plt.close()
 
-    # 두 번째 y축 (Accuracy)
-    ax2 = ax1.twinx()
-    ax2.plot(accuracy, 'r--', label='Accuracy')
-    ax2.set_ylabel('Accuracy', color='r')
-    ax2.tick_params(axis='y', labelcolor='r')
 
-    # 제목과 저장
-    plt.title('Model Graph')
-    fig.tight_layout()  # 레이아웃 조정 (라벨 겹침 방지)
-    plt.savefig(save_path)
-    plt.close()
+def layer_freeze(model:torch.nn.Module, freeze_until_layer_name = None, freeze_until_layer_num = None):	#until 없으면 전부 freeze
+	num = 0
+	is_name_match = (lambda name:name.startswith(freeze_until_layer_name)) if freeze_until_layer_name else (lambda _: False)
+	for name, param in model.named_parameters():
+		num_match = freeze_until_layer_num == num
+
+		if is_name_match(name) or num_match:
+			break
+		param.requires_grad = False
+		num += 1
+
 
 if __name__=='__main__':
 	pass
