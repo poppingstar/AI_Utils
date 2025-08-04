@@ -11,8 +11,12 @@ from typing import Union
 from PIL import Image
 from torchmetrics.functional import confusion_matrix
 from dataclasses import dataclass
+from torch import autocast, GradScaler
+from typing import Optional
 
 plt.switch_backend('agg')
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 
 def check_path(path):
@@ -23,7 +27,7 @@ def check_path(path):
 @dataclass
 class TrainConfig():
 	def __init__(self, save_point=30, batch_size=64, workers=12, epochs=10000, patience=10, lr=0.0005, inplace=(224,224),
-				transforms:dict=None, criterion=nn.CrossEntropyLoss(reduction='sum'), optimizer:optim.Optimizer=None):
+				transforms:dict|None = None, criterion=nn.CrossEntropyLoss(reduction='sum'), optimizer:optim.Optimizer|None = None):
 		for param, name in zip((save_point, batch_size, workers, epochs, patience),('save_point', 'batch', 'workers', 'epochs', 'patience')):
 			assert isinstance(param, int), f'{name} must be instance of int'
 		assert isinstance(lr, (float, int)), 'lr must be instance of float or int'
@@ -64,7 +68,7 @@ class TrainConfig():
 	def nomalize(self, img:torch.Tensor):
 		return img.float()/255.0
 	
-	def save_log(self, file = None):
+	def save_log(self, file:Path):
 		file = Path(file)
 		check_path(file.parent)
 
@@ -161,18 +165,21 @@ def no_overwrite(path, mode='dir')->Path: #기존 훈련 파일이 덮어써지�
 				i+=1
 				path=path.with_name(f'{i}') #없는 디렉토리가 나올 때 까지 숫자를 증가시키며 적용
 			return path
+		case _:
+			raise FileNotFoundError()
 
 
-def run_epoch(model:nn.Module, loader:DataLoader, criterion:_WeightedLoss, optimizer:optim.Optimizer, device:torch.device, mode:str): #에폭 하나를 실행
+def run_epoch(model:nn.Module, loader:DataLoader, criterion:_WeightedLoss, optimizer:optim.Optimizer, device:torch.device, mode:str, scaler:Optional[GradScaler]): #에폭 하나를 실행
 	epoch_loss,epoch_acc=.0,.0  #loss, accuracy 초기화
 
 	match mode:
 		case 'train':  #훈련 모드시 모델을 훈련 모드로, gradient를 계산
 			model.train()
 			grad_mode=torch.enable_grad()
+			assert scaler, 'train시 scaler는 반드시 존재해야 합니다'
 		case 'valid':  #validation모드에선 모델을 추론 모드로, gradient 계산 안함
 			model.eval()
-			grad_mode=torch.no_grad()
+			grad_mode=torch.inference_mode()
 		case 'test':  #테스트모드에선 inference모드로
 			model.eval()
 			grad_mode=torch.inference_mode()  #no_grad보다 훨씬 강력한 모드
@@ -186,16 +193,20 @@ def run_epoch(model:nn.Module, loader:DataLoader, criterion:_WeightedLoss, optim
 		optimizer.zero_grad()  #옵티마이저의 그래디언트 초기화
 
 		with grad_mode:  #각 모드 하에서 실행
-			outputs=model(imgs)  #추론하고
-			if type(outputs) != torch.Tensor:
-				outputs = outputs.logits
-			
-			_,preds=torch.max(outputs,1)  #top 1예측값을 가져옴
-			loss=criterion(outputs,labels)  #loss 계산
-			
-			if mode=='train':  #훈련 모드에선 역전파 포함
-				loss.backward()
-				optimizer.step()
+			with autocast(device.type, torch.bfloat16, True, True):
+				outputs=model(imgs)  #추론하고
+				if type(outputs) != torch.Tensor:
+					outputs = outputs.logits
+				
+				_,preds=torch.max(outputs,1)  #top 1예측값을 가져옴
+				loss=criterion(outputs,labels)  #loss 계산
+				
+				if mode=='train':  #훈련 모드에선 역전파 포함
+					scaler.scale(loss).backward()
+					scaler.step(optimizer)
+					scaler.update()
+				
+
 		batch_size=len(imgs)
 		dataset_size+=batch_size
 
@@ -205,7 +216,6 @@ def run_epoch(model:nn.Module, loader:DataLoader, criterion:_WeightedLoss, optim
 		epoch_fp+=fp
 		epoch_fn+=fn
 
-		torch.cuda.empty_cache() #매 에폭마다 gpu메모리 정리
 		epoch_loss+=loss.item()*batch_size  #epoch loss에 batch별 loss 가산
 		epoch_acc+=torch.sum(preds==labels).item()  #accuracy도 동일
 
@@ -231,17 +241,18 @@ def train_valid_run(model:nn.Module, train_loader:DataLoader, valid_loader:DataL
 	print(device)
 
 	es_count, total_duration=0,0  #early stop 카운트와 총 수행시간을 0으로 초기화
-	minimun_loss=float('inf')  #최소 loss를 무한대로 초기화
+	minimum_loss=float('inf')  #최소 loss를 무한대로 초기화
 	best_path=save_dir/'best_weight.pt'  #best weight 경로 설정
 	last_path=save_dir/'last_weight.pt'  #last weight 경로 설정
 
 	logs=[]
 	train_losses,train_accuracies=[],[]
 	valid_losses,valid_accuracies=[],[]
+	scaler = GradScaler()
 	for epoch in range(1, hyper_param.epochs+1):
 		since=time.time()  #에폭 시작 시간
-		train_loss, train_accuracy, train_precision, tarin_recall = run_epoch(model, train_loader, hyper_param.criterion, hyper_param.optimizer, device, 'train')  #훈련 실행
-		valid_loss, valid_accuracy, valid_precision, valid_recall=run_epoch(model, valid_loader, hyper_param.criterion, hyper_param.optimizer, device, 'valid')  #검증 실행
+		train_loss, train_accuracy, train_precision, tarin_recall = run_epoch(model, train_loader, hyper_param.criterion, hyper_param.optimizer, device, 'train', scaler)  #훈련 실행
+		valid_loss, valid_accuracy, valid_precision, valid_recall = run_epoch(model, valid_loader, hyper_param.criterion, hyper_param.optimizer, device, 'valid', scaler)  #검증 실행
 
 		duration=time.time()-since  #에폭 수행시간 계산
 		total_duration+=duration  #총 수행시간에 합산
@@ -257,7 +268,7 @@ def train_valid_run(model:nn.Module, train_loader:DataLoader, valid_loader:DataL
 		draw_graph(valid_losses,valid_accuracies, save_dir/'valid_graph.png')
 		
 	#early stop
-		if minimun_loss<valid_loss:  #검증 로스가 최소치보다 작지 않으면
+		if minimum_loss<valid_loss:  #검증 로스가 최소치보다 작지 않으면
 			es_count+=1  #es count를 증가시킨다
 			if hyper_param.patience>0 and es_count>=hyper_param.patience:  #만약 patience가 0보다 크고, es_count가 patience보다 높다면
 				torch.save(model.state_dict(),last_path)  #최종 훈련 가중치를 저장하고 학습 종료
@@ -265,7 +276,7 @@ def train_valid_run(model:nn.Module, train_loader:DataLoader, valid_loader:DataL
 				break
 
 		else:  #현재 loss가 최소치면
-			minimun_loss=valid_loss  #minimun loss를 갱신
+			minimum_loss=valid_loss  #minimum loss를 갱신
 			es_count=0  #early stop count를 초기화
 			torch.save(model.state_dict(), best_path)  #best weight를 저장
 			best_log=log
