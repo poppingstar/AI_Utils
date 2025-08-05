@@ -169,7 +169,7 @@ def no_overwrite(path, mode='dir')->Path: #기존 훈련 파일이 덮어써지�
 			raise FileNotFoundError()
 
 
-def run_epoch(model:nn.Module, loader:DataLoader, criterion:_WeightedLoss, optimizer:optim.Optimizer, device:torch.device, mode:str, scaler:Optional[GradScaler]): #에폭 하나를 실행
+def run_epoch(model:nn.Module, loader:DataLoader, criterion:_WeightedLoss, optimizer:optim.Optimizer, device:torch.device, mode:str, scaler:Optional[GradScaler] = None): #에폭 하나를 실행
 	epoch_loss,epoch_acc=.0,.0  #loss, accuracy 초기화
 
 	match mode:
@@ -316,18 +316,6 @@ def train_test(model:nn.Module, train_loader:DataLoader, valid_loader:DataLoader
 	run_test(model, test_loader, hyper_param, save_dir)
 
 
-def draw_graph(loss, accuracy, save_path):
-	plt.plot(loss,'b-', label='Loss')
-	plt.plot(accuracy, 'r-', label='Accuracy')
-	plt.xlabel('Epoch')
-	plt.ylabel('Loss & Accuracy',)
-
-	plt.legend(loc=(0,1))
-	plt.title('Model Graph')
-	plt.savefig(save_path)
-	plt.close()
-
-
 def layer_freeze(model:torch.nn.Module, freeze_until_layer_name = None, freeze_until_layer_num = None):	#until 없으면 전부 freeze
 	num = 0
 	is_name_match = (lambda name:name.startswith(freeze_until_layer_name)) if freeze_until_layer_name else (lambda _: False)
@@ -338,6 +326,24 @@ def layer_freeze(model:torch.nn.Module, freeze_until_layer_name = None, freeze_u
 			break
 		param.requires_grad = False
 		num += 1
+
+
+
+def draw_graph(loss, accuracy, save_path):
+    fig = plt.figure()
+    ax1 = fig.add_subplot()
+
+    ax1.set_xlabel('Epoch')
+    ax1.plot(loss,'b-')
+    ax1.set_ylabel('Loss', color='b')
+
+    ax2 = ax1.twinx()
+    ax2.plot(accuracy, 'r-', label='Accuracy')
+    ax2.set_ylabel('Accuracy', color='r')
+
+    plt.title('Model Graph')
+    plt.savefig(save_path)
+    plt.close()
 
 
 if __name__=='__main__':

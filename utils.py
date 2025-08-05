@@ -1,7 +1,7 @@
 import PIL.Image as Image
 import PIL.ImageFile as ImageFile
 from pathlib import Path
-import threading, os, piexif
+import threading, os, piexif, shutil
 
 ImageFile.LOAD_TRUNCATED_IMAGES=True
 
@@ -64,7 +64,6 @@ def dataset_split(input_dir:Path|str, val_rate:float, test_rate:float):
             for file in file_subset:
                 shutil.move(file, current_dir/file.name)
         os.rmdir(sub_dir)
-
 
 
 def main():
