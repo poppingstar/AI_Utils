@@ -24,6 +24,7 @@ def check_path(path):
 	path.mkdir(parents=True, exist_ok=True)
 
 
+#TODO: assert 예외처리로 변경할 것
 @dataclass
 class TrainConfig():
 	def __init__(self, save_point=30, batch_size=64, workers=12, epochs=10000, patience=10, lr=0.0005, inplace=(224,224),
