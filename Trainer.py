@@ -328,6 +328,11 @@ def layer_freeze(model:torch.nn.Module, freeze_until_layer_name = None, freeze_u
 		num += 1
 
 
+def print_named_params(model):
+    for name, param in model.named_parameters():
+        print(name, param.shape)
+
+
 def draw_graph(loss, accuracy, save_path):
     fig = plt.figure()
     ax1 = fig.add_subplot()

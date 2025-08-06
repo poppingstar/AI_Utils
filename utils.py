@@ -5,9 +5,11 @@ import threading, os, piexif, shutil
 
 ImageFile.LOAD_TRUNCATED_IMAGES=True
 
+
 def is_rgb(img_path:Path):
     with Image.open(img_path) as img:
         return img.mode == 'RGB'
+
 
 def separate_non_rgb(directory_list:list, root:Path):
     separation_dir = root/'non_rgb'
@@ -58,24 +60,25 @@ def dataset_split(input_dir:Path|str, val_rate:float, test_rate:float):
         test_files = files[val_num:val_num+test_num]
         train_files = files[val_num+test_num:]
 
-        for file_subset, group in ((val_files, 'val'), (test_files, 'test'), (train_files, 'train')):
+        for file_subset, group in ((val_files, 'valid'), (test_files, 'test'), (train_files, 'train')):
             current_dir = input_dir/group/sub_dir.name  
             current_dir.mkdir(exist_ok=True, parents=True)
             for file in file_subset:
                 shutil.move(file, current_dir/file.name)
-        os.rmdir(sub_dir)
+        
+        if sub_dir.name not in ('train', 'test', 'valid'):
+            os.rmdir(sub_dir)
 
 
-def main():
+def main(root):
     cpu_num = os.cpu_count()
-    root = Path(r"E:\Datasets\ILSVRC\ILSVRC2010\data")
 
     train = root/'train'
     valid = root/'valid'
     # test = root/'test'
     for d in (train, valid):
         sub_dirs = [sub for sub in d.iterdir()]
-        chunk = len(sub_dirs)//cpu_num
+        chunk = len(sub_dirs) // cpu_num
 
         residual = len(sub_dirs) % chunk
         threads = []
@@ -94,6 +97,7 @@ def main():
 
         for thread in threads:
             thread.join()
+
 
 def chk_corrupt(root:Path, dirlist):
     separtion_dir = root/'corrupt_img'
@@ -114,5 +118,7 @@ def chk_corrupt(root:Path, dirlist):
                 
                 file.rename(new_path)
 
+
 if __name__ == '__main__':
-    main()
+    root = Path(r"E:\Datasets\refined")
+    dataset_split(root, 0.3,0)
