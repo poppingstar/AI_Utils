@@ -33,10 +33,8 @@ class TrainConfig():
 		assert isinstance(lr, (float, int)), 'lr must be instance of float or int'
 		assert isinstance(inplace, (int, tuple)), 'inplace must be int or tuple'
 		assert isinstance(criterion, torch.nn.modules.loss._Loss), 'criterion must be instance of _Loss'
-		if transforms:
-			assert isinstance(transforms, dict), 'transforms must be instance of dict'
-		if optimizer:
-			assert isinstance(optimizer, torch.optim.Optimizer), 'parameter must be instance of Optimizer'
+		assert isinstance(transforms, dict) or transforms is None, 'transforms must be instance of dict'
+		assert isinstance(optimizer, torch.optim.Optimizer) or transforms is None, 'parameter must be instance of Optimizer'
 		
 		self.save_point=save_point
 		self.batch_size=batch_size
@@ -298,6 +296,7 @@ def train_valid_run(model:nn.Module, train_loader:DataLoader, valid_loader:DataL
 def run_test(model:nn.Module, test_loader:DataLoader, hyper_param, save_dir, device = None):
 	if device is None:
 		device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+		
 	model.to(device)
 	since=time.time()*1000
 	test_loss, test_acc, precision, recall=run_epoch(model, test_loader, hyper_param.criterion, hyper_param.optimizer, device, 'test')
@@ -326,7 +325,6 @@ def layer_freeze(model:torch.nn.Module, freeze_until_layer_name = None, freeze_u
 			break
 		param.requires_grad = False
 		num += 1
-
 
 
 def draw_graph(loss, accuracy, save_path):
