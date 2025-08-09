@@ -2,8 +2,61 @@ import PIL.Image as Image
 import PIL.ImageFile as ImageFile
 from pathlib import Path
 import threading, os, piexif, shutil
-
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 ImageFile.LOAD_TRUNCATED_IMAGES=True
+
+
+def multithreading(func, input_list, *args, **kwrgs):
+    def wrapper():
+        cpu_cores = os.cpu_count() or 1
+
+        chunks = list_equal_split(input_list, cpu_cores)
+
+        results = []
+        with ThreadPoolExecutor(cpu_cores) as executor:
+            for chunk in chunks:
+                future = executor.submit(func, chunk, *args, **kwrgs)
+                results.append(future.result())
+        return results
+
+    return wrapper()
+
+
+def multiprocessing(func, input_list, *args, **kwrgs):
+    def wrapper():
+        cpu_cores = os.cpu_count() or 1
+
+        chunks = list_equal_split(input_list, cpu_cores)
+
+        results = []
+        with ProcessPoolExecutor(cpu_cores) as executor:
+            for chunk in chunks:
+                future = executor.submit(func, chunk, *args, **kwrgs)
+                results.append(future.result())
+        return results
+
+    return wrapper()
+
+
+def list_equal_split(input_list, chunk_num):
+    list_len = len(input_list)
+    chunk_num = chunk_num if (chunk_num != 0) and (chunk_num <= list_len) else list_len
+    chunk_size, residual = divmod(list_len, chunk_num)
+    
+    chunks = []
+    start = 0
+    for _ in range(chunk_num):
+        end = start + chunk_size
+
+        if residual > 0:
+            end += 1
+            residual -= 1
+
+        chunk = input_list[start:end]
+        chunks.append(chunk)
+        start = end
+
+    return chunks
 
 
 def is_rgb(img_path:Path):
@@ -18,17 +71,17 @@ def separate_non_rgb(directory_list:list, root:Path):
         for file in directory.iterdir():
             if is_rgb(file):
                 continue
-            else:
-                separation_dir.mkdir(exist_ok=True)
-                name = file.stem
-                extension = file.suffix
-                file_path = separation_dir/directory/file.name
+            
+            separation_dir.mkdir(exist_ok=True)
+            name = file.stem
+            extension = file.suffix
+            file_path = separation_dir/directory/file.name
 
-                i=1
-                while file_path.exists():
-                    file_path = separation_dir/directory/f'{name}({i}){extension}'
-                    i+=1
-                file.rename(file_path)
+            i=1
+            while file_path.exists():
+                file_path = separation_dir/directory/f'{name}({i}){extension}'
+                i+=1
+            file.rename(file_path)
 
 
 def get_files(p:Path):
@@ -70,6 +123,31 @@ def dataset_split(input_dir:Path|str, val_rate:float, test_rate:float):
             os.rmdir(sub_dir)
 
 
+def chk_corrupt(root:Path, dirlist):
+    separtion_dir = root/'corrupt_img'
+
+    for sub_dir in dirlist:
+        sub_dir = Path(sub_dir)
+        for file in sub_dir.iterdir():
+            try:
+                with Image.open(file) as img:
+                    img.verify()
+                    exif_data = img.info.get('exif')
+                    if exif_data:
+                        piexif.load(exif_data)
+            except:
+                sepration_sub_dir = separtion_dir/sub_dir.name
+                sepration_sub_dir.mkdir(exist_ok=True, parents=True)
+                new_path = sepration_sub_dir/file.name
+                
+                file.rename(new_path)
+
+
+if __name__ == '__main__':
+    root = Path(r"E:\refined")
+    dataset_split(root, 0.2,0.1)
+
+    
 def main(root):
     cpu_num = os.cpu_count()
 
@@ -94,31 +172,6 @@ def main(root):
             thread = threading.Thread(target=chk_corrupt, args=(root, dir_per_thread))
             threads.append(thread)
             thread.start()
-
+ 
         for thread in threads:
             thread.join()
-
-
-def chk_corrupt(root:Path, dirlist):
-    separtion_dir = root/'corrupt_img'
-
-    for sub_dir in dirlist:
-        sub_dir = Path(sub_dir)
-        for file in sub_dir.iterdir():
-            try:
-                with Image.open(file) as img:
-                    img.verify()
-                    exif_data = img.info.get('exif')
-                    if exif_data:
-                        piexif.load(exif_data)
-            except:
-                sepration_sub_dir = separtion_dir/sub_dir.name
-                sepration_sub_dir.mkdir(exist_ok=True, parents=True)
-                new_path = sepration_sub_dir/file.name
-                
-                file.rename(new_path)
-
-
-if __name__ == '__main__':
-    root = Path(r"E:\Datasets\refined")
-    dataset_split(root, 0.3,0)
