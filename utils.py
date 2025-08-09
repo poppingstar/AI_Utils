@@ -2,50 +2,40 @@ import PIL.Image as Image
 import PIL.ImageFile as ImageFile
 from pathlib import Path
 import threading, os, piexif, shutil
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 ImageFile.LOAD_TRUNCATED_IMAGES=True
 
 
-def multithreading(func, input_list, *args, **kwrgs):
-    def wrapper():
-        cpu_cores = os.cpu_count() or 1
+def parallel(func):
+    def wrapper(input_list, *args, n_workers:int = None, use_processing:bool = False, **kwargs):
+        n_cores = os.cpu_count() or 1
+        n_workers = n_workers or n_cores
+        chunks = list_equal_split(input_list, n_workers)
+        executor_class = ProcessPoolExecutor if use_processing else ThreadPoolExecutor
+        
+        results = [None] * n_workers
+        with executor_class(n_workers) as executor:
+            futures = {executor.submit(func, chunk, *args, **kwargs):i for i, chunk in enumerate(chunks)}
 
-        chunks = list_equal_split(input_list, cpu_cores)
-
-        results = []
-        with ThreadPoolExecutor(cpu_cores) as executor:
-            for chunk in chunks:
-                future = executor.submit(func, chunk, *args, **kwrgs)
-                results.append(future.result())
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    results[idx] = e
         return results
-
-    return wrapper()
-
-
-def multiprocessing(func, input_list, *args, **kwrgs):
-    def wrapper():
-        cpu_cores = os.cpu_count() or 1
-
-        chunks = list_equal_split(input_list, cpu_cores)
-
-        results = []
-        with ProcessPoolExecutor(cpu_cores) as executor:
-            for chunk in chunks:
-                future = executor.submit(func, chunk, *args, **kwrgs)
-                results.append(future.result())
-        return results
-
-    return wrapper()
+    return wrapper
 
 
-def list_equal_split(input_list, chunk_num):
+def list_equal_split(input_list, n_chunk):
     list_len = len(input_list)
-    chunk_num = chunk_num if (chunk_num != 0) and (chunk_num <= list_len) else list_len
-    chunk_size, residual = divmod(list_len, chunk_num)
+    n_chunk = n_chunk if (n_chunk != 0) and (n_chunk <= list_len) else list_len
+    chunk_size, residual = divmod(list_len, n_chunk)
     
     chunks = []
     start = 0
-    for _ in range(chunk_num):
+    for _ in range(n_chunk):
         end = start + chunk_size
 
         if residual > 0:
@@ -105,13 +95,13 @@ def dataset_split(input_dir:Path|str, val_rate:float, test_rate:float):
 
     for sub_dir in input_dir.iterdir():
         files = list(sub_dir.iterdir())
-        file_num = len(files)
-        val_num = int(file_num * val_rate)
-        test_num = int(file_num * test_rate)
+        n_file = len(files)
+        n_val = int(n_file * val_rate)
+        n_test = int(n_file * test_rate)
         
-        val_files = files[:val_num]
-        test_files = files[val_num:val_num+test_num]
-        train_files = files[val_num+test_num:]
+        val_files = files[:n_val]
+        test_files = files[n_val:n_val+n_test]
+        train_files = files[n_val+n_test:]
 
         for file_subset, group in ((val_files, 'valid'), (test_files, 'test'), (train_files, 'train')):
             current_dir = input_dir/group/sub_dir.name  
@@ -147,21 +137,21 @@ if __name__ == '__main__':
     root = Path(r"E:\refined")
     dataset_split(root, 0.2,0.1)
 
-    
+
 def main(root):
-    cpu_num = os.cpu_count()
+    n_cpu = os.cpu_count()
 
     train = root/'train'
     valid = root/'valid'
     # test = root/'test'
     for d in (train, valid):
         sub_dirs = [sub for sub in d.iterdir()]
-        chunk = len(sub_dirs) // cpu_num
+        chunk = len(sub_dirs) // n_cpu
 
         residual = len(sub_dirs) % chunk
         threads = []
         start=0
-        for i in range(cpu_num):
+        for i in range(n_cpu):
             end=start+chunk
             if residual>i:
                 end+=1

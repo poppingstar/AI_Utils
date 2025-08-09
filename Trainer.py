@@ -334,20 +334,21 @@ def print_named_params(model):
 
 
 def draw_graph(loss, accuracy, save_path):
-    fig = plt.figure()
-    ax1 = fig.add_subplot()
+	fig = plt.figure()
+	ax1 = fig.add_subplot()
 
-    ax1.set_xlabel('Epoch')
-    ax1.plot(loss,'b-')
-    ax1.set_ylabel('Loss', color='b')
+	ax1.set_xlabel('Epoch')
+	ax1.plot(loss,'b-')
+	ax1.set_ylabel('Loss', color='b')
 
-    ax2 = ax1.twinx()
-    ax2.plot(accuracy, 'r-', label='Accuracy')
-    ax2.set_ylabel('Accuracy', color='r')
+	ax2 = ax1.twinx()
+	ax2.plot(accuracy, 'r-', label='Accuracy')
+	ax2.set_ylabel('Accuracy', color='r')
 
-    plt.title('Model Graph')
-    plt.savefig(save_path)
-    plt.close()
+	plt.title('Model Graph')
+	plt.tight_layout()
+	plt.savefig(save_path)
+	plt.close()
 
 
 if __name__=='__main__':
